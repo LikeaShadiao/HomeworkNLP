@@ -1,100 +1,86 @@
-# 基于交叉熵实现多分类任务
+# 基于交叉熵实现多分类并预测
 
 import torch
-import torchvision
-import torchvision.transforms as transforms
-from torch import nn
-from torch.nn import init
-import numpy as np
-import sys
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
 
+# 检查是否有可用的GPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("device is : ", device)
 
-# 加载数据的
-def load_data_fashion_mnist(batch_size, resize=None, root='./Datasets/FashionMNIST'):
-    trans = []
-    if resize:
-        trans.append(torchvision.transforms.Resize(size=resize))
-    trans.append(torchvision.transforms.ToTensor())
 
-    transform = torchvision.transforms.Compose(trans)
-    mnist_train = torchvision.datasets.FashionMNIST(root=root, train=True, download=True, transform=transform)
-    mnist_test = torchvision.datasets.FashionMNIST(root=root, train=False, download=True, transform=transform)
+# 定义超参数
+BATCH_SIZE = 64
+EPOCHS = 60
+LEARNING_RATE = 0.01
 
-    train_iter = torch.utils.data.DataLoader(mnist_train, batch_size=batch_size, shuffle=True, num_workers=4)
-    test_iter = torch.utils.data.DataLoader(mnist_test, batch_size=batch_size, shuffle=False, num_workers=4)
+# 数据预处理
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
 
-    return train_iter, test_iter
+# 加载FashionMNIST数据集
+train_dataset = datasets.FashionMNIST(root='./data', train=True, download=True, transform=transform)
+test_dataset = datasets.FashionMNIST(root='./data', train=False, download=True, transform=transform)
 
-# 评价模型net在数据集data_iter上的准确率
-def evaluate_accuracy(data_iter, net):
-    acc_sum, n = 0.0, 0
-    for X, y in data_iter:
-        acc_sum += (net(X).argmax(dim=1) == y).float().sum().item()
-        n += y.shape[0]
-    return acc_sum / n
+train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+test_loader = DataLoader(dataset=test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
+# 定义简单的神经网络模型
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.fc1 = nn.Linear(28*28, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, 10)
+
+    def forward(self, x):
+        x = x.view(-1, 28*28)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+# 初始化模型、损失函数和优化器
+model = Net().to(device)
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE)
 
 # 训练模型
-def train_0707(net, train_iter, test_iter, loss, num_epochs, batch_size,
-              params=None, lr=None, optimizer=None):
-    for epoch in range(num_epochs):
-        train_l_sum, train_acc_sum, n = 0.0, 0.0, 0
-        for X, y in train_iter:
-            # X, y = X.to(device), y.to(device)
-            y_hat = net(X)
-            l = loss(y_hat, y).sum()
+for epoch in range(EPOCHS):
+    for i, (images, labels) in enumerate(train_loader):
+        images, labels = images.to(device), labels.to(device)  # 将数据移动到GPU
+        outputs = model(images)
+        loss = criterion(outputs, labels)
 
-            # 梯度清零
-            if optimizer is not None:
-                optimizer.zero_grad()
-            elif params is not None and params[0].grad is not None:
-                for param in params:
-                    param.grad.data.zero_()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-            l.backward()
-            if optimizer is None:
-                torch.optim.SGD(params, lr, batch_size)
-            else:
-                optimizer.step()  # “softmax回归的简洁实现”一节将用到
+        if (i+1) % 100 == 0:
+            print(f'Epoch [{epoch+1}/{EPOCHS}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item():.4f}')
 
+print("训练完成！")
 
-            train_l_sum += l.item()
-            train_acc_sum += (y_hat.argmax(dim=1) == y).sum().item()
-            n += y.shape[0]
-        test_acc = evaluate_accuracy(test_iter, net)
-        print('epoch %d, loss %.4f, train acc %.3f, test acc %.3f'
-              % (epoch + 1, train_l_sum / n, train_acc_sum / n, test_acc))
+# 评估模型
+model.eval()
+with torch.no_grad():
+    correct = 0
+    total = 0
+    for images, labels in test_loader:
+        images, labels = images.to(device), labels.to(device)  # 将数据移动到GPU
+        outputs = model(images)
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
 
-# 定义模型
-num_inputs, num_outputs, num_hiddens = 784, 10, 256
+    print(f'测试准确率: {100 * correct / total}%')
 
-net = nn.Sequential(
-        # d2l.FlattenLayer(),
-        nn.Flatten(),
-        nn.Linear(num_inputs, num_hiddens),
-        nn.ReLU(),
-        nn.Linear(num_hiddens, num_outputs), 
-        )
-
-# net.to(device)
-
-for params in net.parameters():
-    init.normal_(params, mean=0, std=0.01)
-
-# 读取数据并训练
-batch_size = 256
-train_iter, test_iter = load_data_fashion_mnist(batch_size)
-loss = torch.nn.CrossEntropyLoss()
-
-optimizer = torch.optim.SGD(net.parameters(), lr=0.5)
-
-num_epochs = 50
-train_0707(net, train_iter, test_iter, loss, num_epochs, batch_size, None, None, optimizer)
-
-
-
-
+# 保存模型
+torch.save(model.state_dict(), 'fashion_mnist.pth')
+print("模型已保存！")
 
 
